@@ -1,0 +1,179 @@
+name: inspect-official-binsec
+
+# One-shot workflow to figure out exactly what is inside the official
+# binsec/binsec Docker image, before we decide whether to depend on it
+# or maintain our own (binsec-docker repo) instead.
+#
+# The job pulls the image, dumps its metadata and labels, locates the
+# binsec binary, and probes it for: SSE plugin, SMT solvers, supported
+# architectures (ARM/AArch64 is the deciding factor for Kharon).
+#
+# Triggers:
+#   - changes to this workflow file on main
+#   - manual workflow_dispatch (to re-run anytime)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-official-binsec.yml'
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: 'Docker image reference to inspect (default: binsec/binsec:latest)'
+        required: true
+        default: 'binsec/binsec:latest'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REF: ${{ github.event.inputs.image_ref || 'binsec/binsec:latest' }}
+    steps:
+      - name: Pull image
+        run: |
+          echo "Pulling $IMAGE_REF"
+          docker pull "$IMAGE_REF"
+
+      - name: Image identity (digest, size, created, entrypoint)
+        run: |
+          echo "::group::Digest"
+          docker inspect --format='{{.Id}}'        "$IMAGE_REF"
+          docker inspect --format='{{.RepoDigests}}' "$IMAGE_REF"
+          echo "::endgroup::"
+
+          echo "::group::Size on disk (bytes)"
+          docker inspect --format='{{.Size}}' "$IMAGE_REF"
+          echo "::endgroup::"
+
+          echo "::group::Created"
+          docker inspect --format='{{.Created}}' "$IMAGE_REF"
+          echo "::endgroup::"
+
+          echo "::group::Architecture / OS"
+          docker inspect --format='{{.Architecture}} / {{.Os}}' "$IMAGE_REF"
+          echo "::endgroup::"
+
+          echo "::group::Entrypoint and Cmd"
+          docker inspect --format='Entrypoint: {{.Config.Entrypoint}}' "$IMAGE_REF"
+          docker inspect --format='Cmd:        {{.Config.Cmd}}'         "$IMAGE_REF"
+          echo "::endgroup::"
+
+          echo "::group::Labels"
+          docker inspect --format='{{json .Config.Labels}}' "$IMAGE_REF" \
+            | python3 -m json.tool || echo "(no labels)"
+          echo "::endgroup::"
+
+      - name: Locate the binsec binary inside the image
+        run: |
+          echo "::group::Where is binsec?"
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            command -v binsec || true
+            find / -name binsec -type f 2>/dev/null | head -10
+          '
+          echo "::endgroup::"
+
+      - name: binsec --version
+        run: |
+          echo "::group::binsec --version"
+          docker run --rm "$IMAGE_REF" --version || \
+            docker run --rm --entrypoint binsec "$IMAGE_REF" --version || true
+          echo "::endgroup::"
+
+      - name: Top-level binsec --help (sub-commands)
+        run: |
+          echo "::group::binsec --help"
+          docker run --rm --entrypoint binsec "$IMAGE_REF" --help 2>&1 | head -120 || true
+          echo "::endgroup::"
+
+      - name: SSE plugin available? (-sse-help)
+        run: |
+          echo "::group::-sse-help"
+          docker run --rm --entrypoint binsec "$IMAGE_REF" -sse-help 2>&1 | head -120 || \
+            echo "[!] -sse-help failed - SSE plugin may be missing"
+          echo "::endgroup::"
+
+      - name: SMT solvers - PATH binaries and dynamic linkage
+        run: |
+          echo "::group::SMT solver binaries in standard paths"
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            for d in /usr/local/bin /usr/bin /opt; do
+              if [ -d "$d" ]; then
+                echo "--- $d ---"
+                ls "$d" 2>/dev/null | grep -iE "z3|bitwuzla|cvc|yices|boolector" || echo "none"
+              fi
+            done
+          '
+          echo "::endgroup::"
+
+          echo "::group::ldd on the binsec binary (reveals statically vs dynamically linked solvers)"
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            BIN=$(command -v binsec || find / -name binsec -type f 2>/dev/null | head -1)
+            echo "Binary: $BIN"
+            ldd "$BIN" 2>&1 || echo "ldd not available, trying readelf"
+            command -v readelf >/dev/null && readelf -d "$BIN" 2>&1 | grep -i needed || true
+          '
+          echo "::endgroup::"
+
+          echo "::group::SMT solver options visible in -sse-help"
+          docker run --rm --entrypoint binsec "$IMAGE_REF" -sse-help 2>&1 \
+            | grep -iE "z3|bitwuzla|cvc|solver|smt" | head -40 || \
+            echo "(no SMT-related options found in help text)"
+          echo "::endgroup::"
+
+      - name: Supported architectures (ARM/AArch64 is critical for Kharon)
+        run: |
+          echo "::group::ISA / architecture mentions in --help"
+          docker run --rm --entrypoint binsec "$IMAGE_REF" --help 2>&1 \
+            | grep -iE "arm|aarch|risc|x86|amd64|powerpc|sparc|mips" | head -40 || \
+            echo "(no architecture options found)"
+          echo "::endgroup::"
+
+          echo "::group::-isa option values (if any)"
+          docker run --rm --entrypoint binsec "$IMAGE_REF" -help-list 2>&1 \
+            | grep -iE "isa|arch" | head -20 || true
+          echo "::endgroup::"
+
+          echo "::group::Hunting for unisim_archisec (decoder for ARM/RISC-V)"
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            find / \( -name "*unisim*" -o -name "*archisec*" \) 2>/dev/null | head -20 \
+              || echo "(unisim_archisec not found - ARM/AArch64 will likely not work)"
+          '
+          echo "::endgroup::"
+
+      - name: Quick functional test - SSE on a trivial x86_64 binary
+        run: |
+          echo "::group::Build a trivial test binary on the runner"
+          mkdir -p /tmp/sse-test
+          cat > /tmp/sse-test/check.c <<'EOF'
+          #include <stdlib.h>
+          int main(int argc, char **argv) {
+              if (argc < 2) return 1;
+              if (argv[1][0] == 'O' && argv[1][1] == 'K') {
+                  return 42;  // target
+              }
+              return 0;
+          }
+          EOF
+          gcc -O0 -no-pie -o /tmp/sse-test/check /tmp/sse-test/check.c
+          objdump -d /tmp/sse-test/check | grep -E "<main>:" -A 30 | head -40
+          echo "::endgroup::"
+
+          echo "::group::Run binsec on it (just disassembly, no SSE script yet)"
+          docker run --rm \
+            -v /tmp/sse-test:/work \
+            --entrypoint binsec \
+            "$IMAGE_REF" \
+            -disasm /work/check 2>&1 | head -40 || \
+            echo "[!] -disasm failed; the image may use a different entry to run binsec"
+          echo "::endgroup::"
+
+      - name: Persist the full image inspect JSON as an artifact
+        run: docker inspect "$IMAGE_REF" > /tmp/binsec-image-inspect.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binsec-image-inspect
+          path: /tmp/binsec-image-inspect.json
+          retention-days: 30
