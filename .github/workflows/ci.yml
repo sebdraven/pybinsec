@@ -67,19 +67,25 @@ jobs:
       - name: Pull pinned Binsec image
         run: docker pull "$BINSEC_IMAGE"
 
-      - name: Extract binsec binary from the image
-        # Copy the binary out of the container into a path on the runner
-        # so tests can call it natively without Docker overhead.
+      - name: Extract binsec binary and bundled libz3 from the image
+        # binsec is dynamically linked against the Z3 shared library that
+        # the opam ``z3`` package builds at install time. That library is
+        # newer than what Ubuntu ships, so we must copy it out alongside
+        # the binary and load it via LD_LIBRARY_PATH. The path inside the
+        # image was confirmed by the inspect-official-binsec workflow:
+        # /home/binsec/.opam/4.14.2/lib/stublibs/libz3.so
         run: |
           mkdir -p "$HOME/binsec-bin"
           CID=$(docker create --entrypoint /bin/sh "$BINSEC_IMAGE")
           docker cp "$CID":/usr/bin/binsec "$HOME/binsec-bin/binsec"
+          docker cp "$CID":/home/binsec/.opam/4.14.2/lib/stublibs/libz3.so "$HOME/binsec-bin/libz3.so"
           docker rm "$CID"
           chmod +x "$HOME/binsec-bin/binsec"
-          # Sanity check
-          "$HOME/binsec-bin/binsec" -version || true
-          echo "$HOME/binsec-bin" >> "$GITHUB_PATH"
+          # Sanity check with the freshly extracted libz3 in the loader path.
+          LD_LIBRARY_PATH="$HOME/binsec-bin" "$HOME/binsec-bin/binsec" -version
+          echo "$HOME/binsec-bin"                       >> "$GITHUB_PATH"
           echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/binsec-bin"        >> "$GITHUB_ENV"
 
       - name: Install runtime libs the extracted binsec needs
         # Mirrors the libs reported by ldd inside the official image:
