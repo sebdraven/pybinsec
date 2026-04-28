@@ -1,0 +1,121 @@
+name: inspect-binsec-examples
+
+# One-shot exploration: find where the binsec/binsec image stores its
+# example scripts and binaries, list them, and upload the whole tree as
+# an artifact so we can study what the tool can really do without
+# guessing from web snippets.
+#
+# The Binsec maintainers say in the README and on binsec.github.io that
+# "examples are bundled in our Docker image and OPAM package" but they
+# do not document a stable path. So we hunt for them.
+#
+# Triggers:
+#   - changes to this file on main
+#   - manual workflow_dispatch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-binsec-examples.yml'
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: 'Docker image reference (default: pinned digest used by CI)'
+        required: true
+        default: 'binsec/binsec@sha256:c50725e855a4c31aa4be04ccd1663834e1cb063ef4c66264d14431d4c65b5dcd'
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REF: ${{ github.event.inputs.image_ref || 'binsec/binsec@sha256:c50725e855a4c31aa4be04ccd1663834e1cb063ef4c66264d14431d4c65b5dcd' }}
+    steps:
+      - name: Pull image
+        run: docker pull "$IMAGE_REF"
+
+      - name: Hunt for the examples directory
+        # Likely candidates (in order of probability):
+        #   /home/binsec/examples
+        #   /home/binsec/.opam/.../share/binsec/examples
+        #   /usr/local/share/binsec/examples
+        #   /opt/binsec/examples
+        # We just `find` for any directory named "examples" under common
+        # roots so we don't miss it.
+        run: |
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            echo "=== known roots ==="
+            for r in /home /opt /usr/local/share /usr/share; do
+              [ -d "$r" ] && find "$r" -maxdepth 6 -type d -name examples 2>/dev/null
+            done
+            echo
+            echo "=== as a sanity check, any file ending in .ini that is the SSE script convention ==="
+            find / -name "*.ini" 2>/dev/null | head -20 || true
+            echo
+            echo "=== look up the opam share dir ==="
+            ls -la /home/binsec/.opam/4.14.2/share/ 2>/dev/null | head -40 || true
+          '
+
+      - name: Tree-list each candidate examples directory
+        run: |
+          docker run --rm --entrypoint /bin/sh "$IMAGE_REF" -c '
+            for r in /home /opt /usr/local/share /usr/share; do
+              [ -d "$r" ] || continue
+              for d in $(find "$r" -maxdepth 6 -type d -name examples 2>/dev/null); do
+                echo "=========================================="
+                echo "  $d"
+                echo "=========================================="
+                # Tree-style listing without depending on `tree` being installed.
+                find "$d" -maxdepth 4 -print | head -200
+                echo
+              done
+            done
+          '
+
+      - name: Stage examples directories and tar them
+        # Copy every "examples" folder we found to a single staging
+        # area and produce a single tarball. This way the artifact has
+        # everything in one place no matter where it lives in the image.
+        run: |
+          mkdir -p /tmp/staged
+          docker run --rm --entrypoint /bin/sh -v /tmp/staged:/staged "$IMAGE_REF" -c '
+            n=0
+            for r in /home /opt /usr/local/share /usr/share; do
+              [ -d "$r" ] || continue
+              for d in $(find "$r" -maxdepth 6 -type d -name examples 2>/dev/null); do
+                n=$((n+1))
+                # Use a path-safe name based on the source path.
+                slug=$(echo "$d" | sed "s|^/||;s|/|__|g")
+                cp -R "$d" "/staged/$slug"
+                echo "staged: $d -> /staged/$slug"
+              done
+            done
+            if [ "$n" = "0" ]; then
+              echo "(!) no examples directories found in the image"
+            fi
+          '
+          ls -la /tmp/staged
+          tar -czf /tmp/binsec-examples.tar.gz -C /tmp staged
+
+      - name: Show every script and small binary we extracted
+        # Quick text dump for the script-like files (.cfg, .ini, .sh,
+        # README, *.md, *.txt). Binary files (ELF/.bin) we skip.
+        run: |
+          echo "::group::Text content of every script/README"
+          find /tmp/staged \
+            \( -name "*.cfg" -o -name "*.ini" -o -name "*.sh" \
+               -o -name "*.md"  -o -name "*.txt" -o -name "README*" \) \
+            -type f -print0 | while IFS= read -r -d "" f; do
+              echo
+              echo "----- $f -----"
+              head -200 "$f"
+              echo
+            done
+          echo "::endgroup::"
+
+      - name: Upload examples tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: binsec-examples
+          path: /tmp/binsec-examples.tar.gz
+          retention-days: 30

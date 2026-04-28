@@ -4,7 +4,7 @@ This is the public entry point. Three layers are exposed:
 
 - Layer 1: low-level subprocess wrapper (:class:`Binsec`)
 - Layer 2: SSE script builder and runner (:mod:`pybinsec.sse`)
-- Layer 3: idiomatic symbolic-execution API (planned: ``Project``)
+- Layer 3: angr-style API (:class:`Project`, :class:`SimulationManager`)
 """
 
 from pybinsec._binsec import Binsec, BinsecInfo, find_binsec
