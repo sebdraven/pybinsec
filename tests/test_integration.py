@@ -1,0 +1,151 @@
+"""End-to-end integration tests against a real Binsec binary.
+
+These tests exercise the full pipeline: compile a tiny C program on
+the fly with gcc, build an SSE script with the fluent API, hand it to
+the runner, and verify that the resulting :class:`SSEResult` reflects
+what we asked for.
+
+They are skipped unless ``binsec`` is on ``$PATH`` or ``PYBINSEC_BINARY``
+is set. In CI, the ``test-binsec`` job extracts the binary from the
+official ``binsec/binsec`` Docker image (pinned by digest) before
+running pytest, which is when these tests actually fire.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from pybinsec import Binsec, ScriptBuilder, SSERunner
+
+# Apply the marker to every test in this module: the CI ignores them on
+# the lint and test-no-bin jobs and runs them only where binsec is set up.
+pytestmark = pytest.mark.requires_binsec
+
+
+def _binsec_available() -> bool:
+    return shutil.which("binsec") is not None or bool(os.environ.get("PYBINSEC_BINARY"))
+
+
+def _gcc_available() -> bool:
+    return shutil.which("gcc") is not None
+
+
+# Tiny C program with a "target" function we want SSE to reach. No I/O,
+# no glibc calls in the reachable path beyond the entry stub, so the
+# symbolic engine doesn't have to model libc. ``argv[1]`` is read from
+# whatever symbolic memory binsec gives us, which is enough for SSE to
+# branch on the two character comparisons.
+_C_SOURCE = r"""
+int target(void) {
+    return 42;
+}
+
+int main(int argc, char **argv) {
+    if (argc >= 2 && argv[1][0] == 'O' && argv[1][1] == 'K') {
+        return target();
+    }
+    return 0;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def compiled_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Compile the test C program once per session.
+
+    Skips the whole module if either gcc or binsec is missing, instead
+    of letting individual tests fail with a confusing error.
+    """
+    if not _gcc_available():
+        pytest.skip("gcc not available on this runner")
+    if not _binsec_available():
+        pytest.skip("real binsec not available")
+
+    work = tmp_path_factory.mktemp("integration")
+    src = work / "check.c"
+    src.write_text(_C_SOURCE)
+    binary = work / "check"
+
+    # -O0 keeps the source structure recognisable.
+    # -no-pie keeps load addresses fixed at 0x400000+, simpler for SSE.
+    # -fno-stack-protector avoids __stack_chk_fail being pulled in.
+    # No -static: smaller binary, and our reachable path doesn't enter
+    # libc anyway.
+    subprocess.run(
+        [
+            "gcc",
+            "-O0",
+            "-no-pie",
+            "-fno-stack-protector",
+            "-o",
+            str(binary),
+            str(src),
+        ],
+        check=True,
+    )
+    return binary
+
+
+class TestBinsecBasics:
+    """Smoke checks that prove the extracted Binsec works at all."""
+
+    def test_version_is_parsed(self) -> None:
+        bs = Binsec()
+        # We do not enforce a specific version string here: tagged builds
+        # produce ``0.10.1``, master builds produce a 7-char git hash.
+        # Either is fine, both are non-empty.
+        assert bs.info.version is not None
+        assert bs.info.raw_version_output
+
+    def test_disasm_runs_on_binary(self, compiled_binary: Path) -> None:
+        """``binsec -disasm`` should accept the freshly compiled ELF."""
+        bs = Binsec()
+        proc = bs.run(["-disasm", str(compiled_binary)], timeout=30)
+        # Binsec prints disassembly to stdout, info logs to stderr.
+        combined = proc.stdout + proc.stderr
+        assert "Linear disassembly" in combined or "<main>" in combined
+
+
+class TestSSEEndToEnd:
+    """Full builder+runner round-trip against a real binsec."""
+
+    def test_reach_target_by_symbol(self, compiled_binary: Path) -> None:
+        """SSE starting from ``main`` should reach the ``target`` symbol."""
+        bs = Binsec()
+        script = ScriptBuilder().starting_from("main").reach("target").build()
+        runner = SSERunner(bs)
+        result = runner.run(script, compiled_binary, timeout=60)
+
+        # Always print captured output on failure so the CI log is useful
+        # without re-running locally.
+        if not result.reached:
+            print(f"\n=== Binsec returncode: {result.returncode} ===")
+            print("=== Script fed ===")
+            print(result.script_text)
+            print("=== Stdout (first 2000 chars) ===")
+            print(result.stdout[:2000])
+            print("=== Stderr (first 2000 chars) ===")
+            print(result.stderr[:2000])
+
+        assert result.reached, "expected at least one reach event"
+        # The reach symbol resolves to the address of <target>; we don't
+        # hard-code it here because it varies with the toolchain version.
+        assert result.reached[0].path_id >= 0
+
+    def test_script_text_is_preserved_in_result(self, compiled_binary: Path) -> None:
+        """``SSEResult.script_text`` must reflect what the builder produced."""
+        bs = Binsec()
+        builder = ScriptBuilder().starting_from("main").reach("target")
+        expected_text = builder.to_sse()
+
+        runner = SSERunner(bs)
+        result = runner.run(builder.build(), compiled_binary, timeout=60)
+
+        assert result.script_text == expected_text
+        assert "starting from <main>" in result.script_text
+        assert "reach <target>" in result.script_text
