@@ -1,0 +1,40 @@
+name: check-bitwuzla-in-image
+
+# One-shot: verify whether the official binsec/binsec image actually
+# ships bitwuzla. The flare-on and Google CTF READMEs list it as a
+# requirement for solving their crackmes. If it's missing, our
+# integration tests for those examples will need to install it
+# separately (or we drop those CTFs from the test matrix).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      BINSEC_IMAGE: binsec/binsec@sha256:c50725e855a4c31aa4be04ccd1663834e1cb063ef4c66264d14431d4c65b5dcd
+    steps:
+      - name: Pull image
+        run: docker pull "$BINSEC_IMAGE"
+
+      - name: Look for bitwuzla
+        run: |
+          docker run --rm --entrypoint /bin/sh "$BINSEC_IMAGE" -c '
+            echo "=== which bitwuzla ==="
+            which bitwuzla || echo "NOT IN PATH"
+            echo
+            echo "=== ls -la common bitwuzla install locations ==="
+            for p in /usr/bin /usr/local/bin /home/binsec/bin /home/binsec/.opam/4.14.2/bin; do
+              [ -d "$p" ] && ls -la "$p" 2>/dev/null | grep -i bitwuzla || true
+            done
+            echo
+            echo "=== bitwuzla --version (if found) ==="
+            bitwuzla --version 2>/dev/null || echo "bitwuzla not callable"
+            echo
+            echo "=== full find for bitwuzla anywhere ==="
+            find / -name "bitwuzla*" -type f 2>/dev/null | head -20 || true
+            echo
+            echo "=== which solvers does binsec advertise? ==="
+            binsec -fml-help 2>&1 | head -30 || binsec -sse-help 2>&1 | head -30 || echo "no help on solvers"
+          '

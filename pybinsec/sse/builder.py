@@ -21,12 +21,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pybinsec.sse.script import (
+    Abort,
     AddressLike,
     Assert,
     Assume,
     Cut,
     ExprLike,
+    Halt,
     Initialize,
+    LoadFromFile,
+    LoadSections,
     Print,
     Reach,
     Reg,
@@ -66,6 +70,7 @@ class ScriptBuilder:
         value: ExprLike,
         *,
         size: int | None = None,
+        as_alias: str | None = None,
     ) -> ScriptBuilder:
         """Initialize a variable or register.
 
@@ -77,12 +82,15 @@ class ScriptBuilder:
           ``rsp := 0x7fff...``).
         - If ``target`` is already a :class:`Var` or :class:`Reg`, it is
           used directly.
+        - ``as_alias`` adds a ``as <alias>`` suffix, used by Binsec to
+          name a stream or to bind an address to a callable symbol
+          (see :class:`Initialize` for the full semantics).
         """
         if isinstance(target, str):
             target_node: Var | Reg = Var(target, size) if size is not None else Reg(target)
         else:
             target_node = target
-        self._script.add(Initialize(target_node, value))
+        self._script.add(Initialize(target_node, value, as_alias=as_alias))
         return self
 
     def init_memory(
@@ -91,11 +99,17 @@ class ScriptBuilder:
         value: ExprLike,
         *,
         size: int = 1,
+        as_alias: str | None = None,
     ) -> ScriptBuilder:
-        """Initialize a memory cell: ``@[address, size] := value``."""
+        """Initialize a memory cell: ``@[address, size] := value [as <alias>]``.
+
+        ``as_alias`` enables both the symbolic-stream pattern
+        (``@[buf+i, 1] := nondet as bRead``) and the PLT-aliasing
+        pattern (``@[0x604208, 8] := 0x... as strncpy``).
+        """
         from pybinsec.sse.script import Mem
 
-        self._script.add(Initialize(Mem(address, size), value))
+        self._script.add(Initialize(Mem(address, size), value, as_alias=as_alias))
         return self
 
     # -- exploration directives ------------------------------------------
@@ -159,6 +173,55 @@ class ScriptBuilder:
         else:
             symbols_seq = list(symbols)
         self._script.add(Replace(symbols=symbols_seq, body=list(body)))
+        return self
+
+    # -- termination / abort directives ----------------------------------
+
+    def halt_at(self, address: AddressLike) -> ScriptBuilder:
+        """Add a ``halt at <addr>`` directive.
+
+        Stops the entire SSE exploration when this address is reached
+        (typical for stubbing ``exit`` / ``ExitProcess``).
+        """
+        self._script.add(Halt(address))
+        return self
+
+    def abort_at(self, *addresses: AddressLike) -> ScriptBuilder:
+        """Add an ``abort at <addr1>, <addr2>...`` directive.
+
+        Abandons any path reaching one of the given addresses. Pass
+        each target as a separate positional argument; the builder
+        combines them into a single Binsec directive.
+        """
+        if not addresses:
+            from pybinsec.exceptions import ScriptError
+
+            raise ScriptError("abort_at() requires at least one address")
+        self._script.add(Abort(addresses=list(addresses)))
+        return self
+
+    # -- loading directives ----------------------------------------------
+
+    def load_sections(self, *sections: str) -> ScriptBuilder:
+        """Add a ``load sections <name>... from file`` directive.
+
+        Section names are passed verbatim, dot-prefix included
+        (``".text"``, ``".rodata"``, etc.).
+        """
+        if not sections:
+            from pybinsec.exceptions import ScriptError
+
+            raise ScriptError("load_sections() requires at least one section name")
+        self._script.add(LoadSections(sections=list(sections)))
+        return self
+
+    def load_from_file(self, address: AddressLike, size: int) -> ScriptBuilder:
+        """Add a ``@[<addr>, <size>] from file`` directive.
+
+        Lazily loads ``size`` bytes starting at ``address`` from the
+        binary on disk into the symbolic memory.
+        """
+        self._script.add(LoadFromFile(address=address, size=size))
         return self
 
     # -- escape hatch ----------------------------------------------------

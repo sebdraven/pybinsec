@@ -67,7 +67,7 @@ jobs:
       - name: Pull pinned Binsec image
         run: docker pull "$BINSEC_IMAGE"
 
-      - name: Extract binsec binary and bundled libz3 from the image
+      - name: Extract binsec binary, bundled libz3, and example artefacts
         # binsec is dynamically linked against the Z3 shared library that
         # the opam ``z3`` package builds at install time. That library is
         # newer than what Ubuntu ships, so we must copy it out alongside
@@ -75,27 +75,58 @@ jobs:
         # image was confirmed by the inspect-official-binsec workflow:
         # /home/binsec/.opam/4.14.2/lib/stublibs/libz3.so
         #
-        # We also pull out the canonical ``magic`` quickstart binary so
-        # the integration tests can reproduce the official Binsec
-        # tutorial against the same artefact, not a runner-recompiled
-        # one. The exact path inside the image was confirmed by the
-        # inspect-binsec-examples workflow.
+        # We also pull out:
+        #   - the canonical ``magic`` quickstart binary, so integration
+        #     tests reproduce the official Binsec tutorial verbatim;
+        #   - the flare-on/2017.2 IgniteMe.exe and its reference
+        #     crackme.ini, so we can both run the challenge and diff
+        #     our pybinsec-generated script against the upstream one.
+        #
+        # The bitwuzla solver is needed to actually solve the flare-on
+        # challenge in reasonable time. We try to extract it from the
+        # image; ``|| true`` keeps the step non-fatal so older images
+        # without bitwuzla still pass the magic quickstart tests.
         run: |
           mkdir -p "$HOME/binsec-bin"
           mkdir -p "$HOME/binsec-examples"
+          mkdir -p "$HOME/binsec-examples/flare-on-2017.2"
           CID=$(docker create --entrypoint /bin/sh "$BINSEC_IMAGE")
           docker cp "$CID":/usr/bin/binsec "$HOME/binsec-bin/binsec"
           docker cp "$CID":/home/binsec/.opam/4.14.2/lib/stublibs/libz3.so "$HOME/binsec-bin/libz3.so"
           docker cp "$CID":/home/binsec/examples/sse/quickstart/magic "$HOME/binsec-examples/magic"
+          docker cp "$CID":/home/binsec/examples/sse/flare-on/2017.2/IgniteMe.exe \
+            "$HOME/binsec-examples/flare-on-2017.2/IgniteMe.exe"
+          docker cp "$CID":/home/binsec/examples/sse/flare-on/2017.2/crackme.ini \
+            "$HOME/binsec-examples/flare-on-2017.2/crackme.ini"
+          # Best-effort bitwuzla extraction. The official image ships
+          # it in /usr/local/bin per the README requirements; we also
+          # try a couple of opam locations as a fallback.
+          for cand in /usr/local/bin/bitwuzla /usr/bin/bitwuzla \
+                      /home/binsec/.opam/4.14.2/bin/bitwuzla; do
+            if docker cp "$CID":"$cand" "$HOME/binsec-bin/bitwuzla" 2>/dev/null; then
+              echo "  -> bitwuzla extracted from $cand"
+              chmod +x "$HOME/binsec-bin/bitwuzla"
+              break
+            fi
+          done
           docker rm "$CID"
           chmod +x "$HOME/binsec-bin/binsec"
           chmod +x "$HOME/binsec-examples/magic"
           # Sanity check with the freshly extracted libz3 in the loader path.
           LD_LIBRARY_PATH="$HOME/binsec-bin" "$HOME/binsec-bin/binsec" -version
-          echo "$HOME/binsec-bin"                                  >> "$GITHUB_PATH"
-          echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec"            >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/binsec-bin"                   >> "$GITHUB_ENV"
-          echo "PYBINSEC_OFFICIAL_MAGIC=$HOME/binsec-examples/magic" >> "$GITHUB_ENV"
+          if [ -x "$HOME/binsec-bin/bitwuzla" ]; then
+            LD_LIBRARY_PATH="$HOME/binsec-bin" "$HOME/binsec-bin/bitwuzla" --version || true
+          else
+            echo "  (!) bitwuzla not available; flare-on tests will be skipped"
+          fi
+          echo "$HOME/binsec-bin"                                              >> "$GITHUB_PATH"
+          echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec"                        >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/binsec-bin"                               >> "$GITHUB_ENV"
+          echo "PYBINSEC_OFFICIAL_MAGIC=$HOME/binsec-examples/magic"             >> "$GITHUB_ENV"
+          echo "PYBINSEC_OFFICIAL_FLAREON_2017_2=$HOME/binsec-examples/flare-on-2017.2/IgniteMe.exe" \
+                                                                                >> "$GITHUB_ENV"
+          echo "PYBINSEC_OFFICIAL_FLAREON_2017_2_INI=$HOME/binsec-examples/flare-on-2017.2/crackme.ini" \
+                                                                                >> "$GITHUB_ENV"
 
       - name: Install runtime libs the extracted binsec needs
         # Mirrors the libs reported by ldd inside the official image:

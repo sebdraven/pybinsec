@@ -436,9 +436,9 @@ class TestOfficialMagicQuickstart:
         # iteration is defensive: a single reach is the expected case
         # but Binsec can in principle emit more.
         recovered = [rp.values.get("arg<32>") for rp in result.reached]
-        assert 0xC0DEDEAD in recovered, (
-            f"expected arg<32> == 0xc0dedead in the recovered values, " f"got: {recovered}"
-        )
+        assert (
+            0xC0DEDEAD in recovered
+        ), f"expected arg<32> == 0xc0dedead in the recovered values, got: {recovered}"
 
     # NOTE: a Project / SimulationManager reproduction of this same
     # crackme requires ``simgr.explore(such_that=...)`` (or a
@@ -447,3 +447,192 @@ class TestOfficialMagicQuickstart:
     # API only exposes ``state.add_constraint(...)`` which is an
     # ``assume`` directive applied early, not a per-reach filter.
     # Tracked as a v0.4 API extension candidate.
+
+
+class TestFlareOn2017_2EndToEnd:
+    """Reproduce the official flare-on/2017.2 IgniteMe.exe challenge.
+
+    Two tests of increasing strength:
+
+    1. ``test_generated_script_matches_reference`` — pure text diff:
+       the script our ``examples/02_flare_on_2017_2.py`` builds with
+       pybinsec is byte-for-byte identical (modulo blank lines and
+       comments) to the upstream ``crackme.ini``. Always runs as long
+       as the reference INI was extracted from the image.
+
+    2. ``test_recover_secret_with_bitwuzla`` — actually solve the
+       challenge by feeding our generated script and the IgniteMe.exe
+       binary to Binsec with bitwuzla. Skipped if bitwuzla is missing
+       (older images, custom rebuilds). Expected secret comes from the
+       official README:
+
+           [sse:result] Ascii stream bRead :
+               "R_y0u_H0t_3n0ugH_t0_1gn1t3@flare-on.com"
+    """
+
+    EXPECTED_SECRET = "R_y0u_H0t_3n0ugH_t0_1gn1t3@flare-on.com"
+
+    @pytest.fixture(scope="class")
+    def igniteme_binary(self) -> Path:
+        path = os.environ.get("PYBINSEC_OFFICIAL_FLAREON_2017_2")
+        if not path:
+            pytest.skip(
+                "PYBINSEC_OFFICIAL_FLAREON_2017_2 env var not set; the "
+                "IgniteMe.exe binary is only extracted from the official "
+                "image in the test-binsec CI job."
+            )
+        binary = Path(path)
+        if not binary.is_file():
+            pytest.skip(f"PYBINSEC_OFFICIAL_FLAREON_2017_2 -> missing file: {path}")
+        return binary
+
+    @pytest.fixture(scope="class")
+    def reference_ini(self) -> Path:
+        path = os.environ.get("PYBINSEC_OFFICIAL_FLAREON_2017_2_INI")
+        if not path:
+            pytest.skip("PYBINSEC_OFFICIAL_FLAREON_2017_2_INI env var not set.")
+        ini = Path(path)
+        if not ini.is_file():
+            pytest.skip(f"reference crackme.ini missing at {path}")
+        return ini
+
+    @pytest.fixture(scope="class")
+    def bitwuzla_available(self) -> bool:
+        return shutil.which("bitwuzla") is not None
+
+    def _build_script(self) -> ScriptBuilder:
+        """Inline copy of examples/02_flare_on_2017_2.py::build_script.
+
+        Kept inline (instead of importing) so the test does not depend
+        on the examples/ folder being importable as a package.
+        """
+        return (
+            ScriptBuilder()
+            .load_sections(".text", ".rdata", ".data")
+            .init("esp", 0x12FFB0)
+            .init_memory(0x402000, 0x7C811D77, size=4, as_alias="ReadFile")
+            .init_memory(0x402004, 0x7C81ADA0, size=4, as_alias="WriteFile")
+            .init_memory(0x402008, 0x7C81902D, size=4, as_alias="ExitProcess")
+            .init_memory(0x40200C, 0x7C812F39, size=4, as_alias="GetStdHandle")
+            .halt_at("ExitProcess")
+            .replace(["GetStdHandle", "WriteFile"], body=["return"])
+            # The ReadFile stub uses for/if which sprint 1 doesn't model;
+            # raw lines verbatim from the upstream crackme.ini.
+            .raw("replace ReadFile(_, lpBuffer, nNumberOfBytesToRead, lpNumberOfBytesRead) by")
+            .raw("    nNumberOfBytesRead<32>   := nondet")
+            .raw("    assume 2 <= nNumberOfBytesRead <= nNumberOfBytesToRead")
+            .raw("")
+            .raw("    bReadConstraints<1>      := true")
+            .raw("")
+            .raw("    for i<32> in 0 to nNumberOfBytesRead - 3 do")
+            .raw("        @[lpBuffer + i] := nondet as bRead")
+            .raw('        bReadConstraints := bReadConstraints && " " <= bRead <= "~"')
+            .raw("    end")
+            .raw("")
+            .raw('    @[lpBuffer + i] := "\\r"')
+            .raw('    @[lpBuffer + i + 1] := "\\n"')
+            .raw("")
+            .raw("    assume bReadConstraints")
+            .raw("")
+            .raw("    if lpNumberOfBytesRead <> 0 then")
+            .raw("        @[lpNumberOfBytesRead, 4] := nNumberOfBytesRead")
+            .raw("    end")
+            .raw("")
+            .raw("    return 1")
+            .raw("end")
+            .reach(
+                "WriteFile",
+                such_that='@[@[esp + 8, 4], 9] = "G00d j0b!"',
+                then="print ascii stream bRead",
+            )
+            .cut_at(
+                "WriteFile",
+                if_cond='@[@[esp + 8, 4], 35] = "N0t t00 h0t R we? 7ry 4ga1nz plzzz!"',
+            )
+        )
+
+    @staticmethod
+    def _normalize(text: str) -> list[str]:
+        """Strip blank/comment lines and trailing whitespace per line.
+
+        Used so the comparison ignores cosmetic differences between
+        our generated text and the upstream INI.
+        """
+        out = []
+        for raw in text.splitlines():
+            stripped = raw.rstrip()
+            bare = stripped.lstrip()
+            if not bare or bare.startswith("#"):
+                continue
+            out.append(stripped)
+        return out
+
+    def test_generated_script_matches_reference(self, reference_ini: Path) -> None:
+        """Pybinsec produces the same SSE script the Binsec authors did."""
+        generated = self._build_script().to_sse()
+        gen_lines = self._normalize(generated)
+        ref_lines = self._normalize(reference_ini.read_text())
+
+        if gen_lines != ref_lines:
+            from difflib import unified_diff
+
+            diff = "\n".join(
+                unified_diff(
+                    ref_lines,
+                    gen_lines,
+                    fromfile="crackme.ini (upstream)",
+                    tofile="pybinsec generated",
+                    lineterm="",
+                )
+            )
+            print(f"\n=== diff vs upstream ===\n{diff}\n========================")
+
+        assert gen_lines == ref_lines, (
+            "pybinsec script diverged from upstream crackme.ini; see "
+            "diff in test stdout for details"
+        )
+
+    def test_recover_secret_with_bitwuzla(
+        self,
+        igniteme_binary: Path,
+        bitwuzla_available: bool,
+    ) -> None:
+        """End-to-end: drive Binsec on IgniteMe.exe and check the secret."""
+        if not bitwuzla_available:
+            pytest.skip(
+                "bitwuzla not available; the SSE script for this challenge "
+                "is bitvector-heavy and z3 alone takes hours. Install "
+                "bitwuzla on the runner or use a binsec image that bundles "
+                "it to enable this test."
+            )
+
+        bs = Binsec()
+        builder = self._build_script()
+        runner = SSERunner(bs)
+
+        # The official config.cfg passes -sse-depth 100000. We add a
+        # generous wall-clock timeout so a runner stall does not look
+        # like a real failure.
+        result = runner.run(
+            builder.build(),
+            igniteme_binary,
+            timeout=15 * 60,  # 15 minutes
+            extra_args=[
+                "-fml-solver",
+                "bitwuzla",
+                "-sse-depth",
+                "100000",
+            ],
+        )
+
+        if self.EXPECTED_SECRET not in result.stdout:
+            print(f"\n=== returncode: {result.returncode} ===")
+            print("=== Stdout (first 8000) ===")
+            print(result.stdout[:8000])
+            print("=== Stderr (first 4000) ===")
+            print(result.stderr[:4000])
+
+        assert self.EXPECTED_SECRET in result.stdout, (
+            f"expected to recover {self.EXPECTED_SECRET!r} in stdout; "
+            "see test output above for what we got"
+        )

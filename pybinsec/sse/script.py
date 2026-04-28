@@ -181,21 +181,35 @@ class StartingFrom(Directive):
 
 @dataclass(frozen=True, slots=True)
 class Initialize(Directive):
-    """A top-level assignment: ``<lhs> := <rhs>``.
+    """A top-level assignment: ``<lhs> := <rhs> [as <alias>]``.
 
     Used to fix the initial value of a register, memory cell, or a
-    fresh declared variable. Examples:
+    fresh declared variable. The optional ``as_alias`` introduces a
+    Binsec stream/symbol alias that the rest of the script (or the
+    ``print`` directive) can reference by name. Examples:
 
     - ``Initialize(Reg("rsp"), 0x7fffffffd8e0)`` -> ``rsp := 0x7fffffffd8e0``
     - ``Initialize(Var("goal", 64), 0x401234)`` -> ``goal<64> := 0x401234``
     - ``Initialize(Mem(Reg("rdi"), 8), NONDET)`` -> ``@[rdi, 8] := nondet``
+    - ``Initialize(Mem(0x604208, 8), 0x7ffff7f45f30, as_alias="strncpy")``
+      -> ``@[0x604208, 8] := 0x7ffff7f45f30 as strncpy`` (the alias
+      lets later directives say ``replace strncpy by ...`` without
+      caring about the actual address)
+    - ``Initialize(Mem(BinOp("lpBuffer", "+", "i"), 1), NONDET, as_alias="bRead")``
+      -> ``@[(lpBuffer + i), 1] := nondet as bRead`` (creates a named
+      symbolic byte stream that can be read back via
+      ``print ascii stream bRead``)
     """
 
     lhs: ExprLike
     rhs: ExprLike
+    as_alias: str | None = None
 
     def to_sse(self) -> str:
-        return f"{_render_expr(self.lhs)} := {_render_expr(self.rhs)}"
+        out = f"{_render_expr(self.lhs)} := {_render_expr(self.rhs)}"
+        if self.as_alias is not None:
+            out += f" as {self.as_alias}"
+        return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +288,24 @@ class Print(Directive):
 
 
 @dataclass(frozen=True, slots=True)
+class Return(Directive):
+    """``return [<expr>]``: return from a stubbed function.
+
+    Used inside :class:`Replace` bodies. Without an expression it
+    renders as plain ``return`` (the stub leaves whatever the engine
+    has in the ABI return register). With an expression, the engine
+    sets the return register to that value before returning.
+    """
+
+    value: ExprLike | None = None
+
+    def to_sse(self) -> str:
+        if self.value is None:
+            return "return"
+        return f"return {_render_expr(self.value)}"
+
+
+@dataclass(frozen=True, slots=True)
 class Replace(Directive):
     """``replace <sym1>[, <sym2>...] by <body> end``.
 
@@ -281,12 +313,13 @@ class Replace(Directive):
     functions like ``puts`` or ``__isoc99_scanf``) with a custom
     sequence of statements, terminated by ``end``.
 
-    The ``body`` argument is a sequence of strings or :class:`Initialize`
-    directives. Each entry becomes one line inside the replace block.
+    The ``body`` argument is a sequence of strings, :class:`Initialize`,
+    or :class:`Return` directives. Each entry becomes one line inside
+    the replace block.
     """
 
     symbols: Sequence[Sym | str]
-    body: Sequence[Initialize | str]
+    body: Sequence[Initialize | Return | str]
 
     def to_sse(self) -> str:
         if not self.symbols:
@@ -294,10 +327,82 @@ class Replace(Directive):
         head = ", ".join(_render_address(s) for s in self.symbols)
         lines = [f"replace {head} by"]
         for stmt in self.body:
-            rendered = stmt.to_sse() if isinstance(stmt, Initialize) else str(stmt)
+            if isinstance(stmt, Initialize | Return):
+                rendered = stmt.to_sse()
+            else:
+                rendered = str(stmt)
             lines.append(f"    {rendered}")
         lines.append("end")
         return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class Halt(Directive):
+    """``halt at <addr>``: stop the entire exploration when reached.
+
+    Differs from :class:`Cut` in that ``halt`` terminates SSE
+    altogether (used in stubs like ``halt at exit``) whereas ``cut``
+    only prunes the current path.
+    """
+
+    address: AddressLike
+
+    def to_sse(self) -> str:
+        return f"halt at {_render_address(self.address)}"
+
+
+@dataclass(frozen=True, slots=True)
+class Abort(Directive):
+    """``abort at <addr1>[, <addr2>...]``: abandon paths that hit any of these.
+
+    Used in CTF-style scripts to prune paths reaching unsupported
+    library functions (e.g. ``abort at LoadLibraryA, GetProcAddress``).
+    Unlike :class:`Cut`, ``abort`` is a *batch* directive: a single
+    line covers many target addresses.
+    """
+
+    addresses: Sequence[AddressLike]
+
+    def to_sse(self) -> str:
+        if not self.addresses:
+            raise ScriptError("Abort requires at least one address")
+        rendered = ", ".join(_render_address(a) for a in self.addresses)
+        return f"abort at {rendered}"
+
+
+@dataclass(frozen=True, slots=True)
+class LoadSections(Directive):
+    """``load sections <name1>[, <name2>...] from file``.
+
+    Tells Binsec to load the listed ELF/PE sections from the analysed
+    binary into the symbolic memory before exploration starts.
+    Section names are written verbatim, dot-prefix included (e.g.
+    ``.text``, ``.rodata``, ``.bss``).
+    """
+
+    sections: Sequence[str]
+
+    def to_sse(self) -> str:
+        if not self.sections:
+            raise ScriptError("LoadSections requires at least one section name")
+        return f"load sections {', '.join(self.sections)} from file"
+
+
+@dataclass(frozen=True, slots=True)
+class LoadFromFile(Directive):
+    """``@[<addr>, <size>] from file``.
+
+    Lazily loads ``size`` bytes starting at ``address`` from the
+    binary on disk into symbolic memory. Lighter alternative to
+    :class:`LoadSections` when only a small region is needed (e.g.
+    populating a single jump table).
+    """
+
+    address: AddressLike
+    size: int
+
+    def to_sse(self) -> str:
+        return f"@[{_render_address(self.address)}, {self.size}] from file"
 
 
 # ---------------------------------------------------------------------------

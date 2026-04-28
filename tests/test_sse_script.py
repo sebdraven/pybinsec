@@ -13,17 +13,22 @@ import pytest
 from pybinsec.exceptions import ScriptError
 from pybinsec.sse import (
     NONDET,
+    Abort,
     Assert,
     Assume,
     BinOp,
     Const,
     Cut,
+    Halt,
     Initialize,
+    LoadFromFile,
+    LoadSections,
     Mem,
     Print,
     Reach,
     Reg,
     Replace,
+    Return,
     Script,
     StartingFrom,
     Sym,
@@ -219,3 +224,141 @@ class TestScriptComposition:
             "reach 0x8048071 such that (al <> 0x0) then print @[esp + 4, 4]\n"
         )
         assert script.to_sse() == expected
+
+
+# ---------------------------------------------------------------------------
+# v0.4 sprint 1: scalar directives
+# ---------------------------------------------------------------------------
+
+
+class TestInitializeWithAlias:
+    """The ``as <alias>`` suffix on Initialize.
+
+    Two real-world uses, both lifted from the official Google CTF
+    crackme.ini in the binsec/binsec image:
+
+    1. Symbolic stream: ``@[buf+i, 1] := nondet as bRead``
+       The bytes are symbolic, but binsec exposes them under the
+       ``bRead`` stream so ``print ascii stream bRead`` can dump them.
+    2. PLT alias: ``@[0x604208, 8] := 0x7ffff7f45f30 as strncpy``
+       Binds the runtime address to a callable name so later
+       directives can say ``replace strncpy by ...``.
+    """
+
+    def test_register_alias_omitted(self) -> None:
+        # Backwards-compat: the new field defaults to None.
+        assert Initialize(Reg("rsp"), 0x1234).to_sse() == "rsp := 0x1234"
+
+    def test_stream_alias_on_memory(self) -> None:
+        node = Initialize(
+            Mem(BinOp("lpBuffer", "+", Var("i", 32)), 1),
+            NONDET,
+            as_alias="bRead",
+        )
+        assert node.to_sse() == "@[(lpBuffer + i<32>), 1] := nondet as bRead"
+
+    def test_plt_alias_on_memory(self) -> None:
+        node = Initialize(
+            Mem(0x604208, 8),
+            0x7FFFF7F45F30,
+            as_alias="strncpy",
+        )
+        assert node.to_sse() == "@[0x604208, 8] := 0x7ffff7f45f30 as strncpy"
+
+
+class TestReturn:
+    def test_bare(self) -> None:
+        assert Return().to_sse() == "return"
+
+    def test_with_int_value(self) -> None:
+        assert Return(value=1).to_sse() == "return 0x1"
+
+    def test_with_register_value(self) -> None:
+        assert Return(value=Reg("rdi")).to_sse() == "return rdi"
+
+    def test_in_replace_body(self) -> None:
+        """``Return`` directives are accepted in :class:`Replace` bodies.
+
+        Mirrors the canonical Google CTF stub ``replace puts, printf by
+        return end``.
+        """
+        block = Replace(
+            symbols=["puts", "printf"],
+            body=[Return()],
+        ).to_sse()
+        expected = "replace <puts>, <printf> by\n    return\nend"
+        assert block == expected
+
+    def test_return_value_in_replace_body(self) -> None:
+        # flare-on/2017.2's ReadFile stub ends with ``return 1``.
+        block = Replace(
+            symbols=["ReadFile"],
+            body=[
+                Initialize(Mem("lpNumberOfBytesRead", 4), Var("nNumberOfBytesRead", 32)),
+                Return(value=1),
+            ],
+        ).to_sse()
+        expected = (
+            "replace <ReadFile> by\n"
+            "    @[lpNumberOfBytesRead, 4] := nNumberOfBytesRead<32>\n"
+            "    return 0x1\n"
+            "end"
+        )
+        assert block == expected
+
+
+class TestHalt:
+    def test_at_symbol(self) -> None:
+        # The canonical ``halt at exit`` from sse/google/exit.stub.
+        assert Halt("exit").to_sse() == "halt at <exit>"
+
+    def test_at_address(self) -> None:
+        assert Halt(0x401234).to_sse() == "halt at 0x401234"
+
+
+class TestAbort:
+    def test_single_target(self) -> None:
+        # Single argument still uses the ``abort at`` form (not ``cut
+        # at``) because the user asked for abort semantics.
+        assert Abort(addresses=["errx"]).to_sse() == "abort at <errx>"
+
+    def test_multiple_targets(self) -> None:
+        # Lifted from sse/google/crackme.ini.
+        node = Abort(
+            addresses=[
+                "errx",
+                "__libc_start_main",
+                "__gmon_start__",
+                "__ctype_b_loc",
+            ]
+        )
+        expected = "abort at <errx>, <__libc_start_main>, <__gmon_start__>, <__ctype_b_loc>"
+        assert node.to_sse() == expected
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ScriptError):
+            Abort(addresses=[]).to_sse()
+
+
+class TestLoadSections:
+    def test_single_section(self) -> None:
+        assert LoadSections(sections=[".text"]).to_sse() == "load sections .text from file"
+
+    def test_multiple_sections(self) -> None:
+        # From sse/flare-on/2017.2/crackme.ini.
+        node = LoadSections(sections=[".text", ".rdata", ".data"])
+        assert node.to_sse() == "load sections .text, .rdata, .data from file"
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ScriptError):
+            LoadSections(sections=[]).to_sse()
+
+
+class TestLoadFromFile:
+    def test_at_symbol(self) -> None:
+        # ``@[<.text>, 512] from file`` from sse/flare-on/2015.1.
+        assert LoadFromFile("<.text>", 512).to_sse() == "@[<.text>, 512] from file"
+
+    def test_at_address(self) -> None:
+        # ``size`` is rendered in decimal (natural form for a byte count).
+        assert LoadFromFile(0x402000, 256).to_sse() == "@[0x402000, 256] from file"
