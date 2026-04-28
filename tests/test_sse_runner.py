@@ -14,9 +14,8 @@ import pytest
 
 from pybinsec import Binsec
 from pybinsec.sse import ScriptBuilder, SSERunner
-from pybinsec.sse.runner import _parse_output  # noqa: PLC2701  (private parser)
+from pybinsec.sse.runner import _parse_output
 from tests.test_binsec_detection import _make_fake_binsec
-
 
 # ---------------------------------------------------------------------------
 # Output parser
