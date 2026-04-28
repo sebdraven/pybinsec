@@ -24,7 +24,7 @@ from tests.test_binsec_detection import _make_fake_binsec
 
 class TestParseOutput:
     def test_single_reach_with_values(self) -> None:
-        # Lifted from the Binsec ``magic`` tutorial output.
+        # Lifted from the Binsec ``magic`` tutorial output (older format).
         text = (
             "[sse:result] Directive :: path 0 reached address 08048071 (0 to go)\n"
             "[sse:result] Value @[(esp<32> + 4<32>),4] : 0x80808000\n"
@@ -37,10 +37,33 @@ class TestParseOutput:
         rp = reached[0]
         assert rp.path_id == 0
         assert rp.address == 0x08048071
+        assert rp.symbol is None
         assert rp.values == {
             "@[(esp<32> + 4<32>),4]": 0x80808000,
             "eax<32>{0,7}": 0x00,
         }
+
+    def test_new_format_with_symbol(self) -> None:
+        # Format observed in master builds of Binsec (the official
+        # binsec/binsec:latest image at digest c50725e8...).
+        text = "[sse:result] Path 3 reached address 0x401106 (<target>) (0 to go)\n"
+        reached, cuts = _parse_output(text)
+        assert len(reached) == 1
+        assert cuts == []
+        rp = reached[0]
+        assert rp.path_id == 3
+        assert rp.address == 0x401106
+        assert rp.symbol == "<target>"
+        assert rp.values == {}
+
+    def test_new_format_without_symbol(self) -> None:
+        # The symbol is optional in the new format too; binsec only
+        # prints it when the address resolves to a known symbol.
+        text = "[sse:result] Path 0 reached address 0x401234 (0 to go)\n"
+        reached, _ = _parse_output(text)
+        assert len(reached) == 1
+        assert reached[0].address == 0x401234
+        assert reached[0].symbol is None
 
     def test_multiple_reaches(self) -> None:
         text = (

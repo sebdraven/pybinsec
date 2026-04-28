@@ -28,11 +28,23 @@ from pybinsec.sse.script import Script
 
 # Regexes for the lines we currently understand. Binsec prefixes log
 # lines with the producing channel in square brackets, e.g.
-# ``[sse:result] Directive :: path 0 reached address 08048071 (0 to go)``.
+# ``[sse:result] Path 3 reached address 0x401106 (<target>) (0 to go)``.
+#
+# Two ``reached`` formats are observed in the wild:
+#   - older releases (≤0.10.x):
+#       ``[sse:result] Directive :: path 0 reached address 08048071 (0 to go)``
+#   - master / recent commits:
+#       ``[sse:result] Path 3 reached address 0x401106 (<target>) (0 to go)``
+# The new form also carries the symbol name in parentheses, which we
+# capture optionally as ``symbol``.
 
 _REACHED_RE = re.compile(
-    r"\[sse:result\]\s+Directive\s+::\s+path\s+(?P<path>\d+)\s+"
-    r"reached\s+address\s+(?P<address>[0-9a-fA-Fx]+)"
+    r"\[sse:result\]\s+"
+    r"(?:Directive\s+::\s+path|Path)\s+"
+    r"(?P<path>\d+)\s+"
+    r"reached\s+address\s+"
+    r"(?P<address>(?:0x)?[0-9a-fA-F]+)"
+    r"(?:\s+\((?P<symbol><[^>]+>)\))?"
 )
 _VALUE_RE = re.compile(
     r"\[sse:result\]\s+Value\s+(?P<expr>.+?)\s*:\s*(?P<value>0x[0-9a-fA-F]+)\s*$"
@@ -42,10 +54,21 @@ _CUT_RE = re.compile(r"\[sse:warning\]\s+Cut\s+@\s+\((?P<address>[0-9a-fA-Fx]+),
 
 @dataclass(frozen=True, slots=True)
 class ReachedPoint:
-    """One ``reach`` directive that fired during exploration."""
+    """One ``reach`` directive that fired during exploration.
+
+    Attributes:
+        path_id: Path identifier as reported by Binsec.
+        address: Target address that was reached.
+        symbol: Optional symbol name printed by Binsec next to the
+            address (e.g. ``"<target>"``). Only present in newer
+            Binsec versions; ``None`` for older outputs.
+        values: Map of expressions to values printed via ``then print``
+            after the reach line.
+    """
 
     path_id: int
     address: int
+    symbol: str | None = None
     values: dict[str, int] = field(default_factory=dict)
 
 
@@ -193,6 +216,7 @@ def _parse_output(text: str) -> tuple[list[ReachedPoint], list[CutPoint]]:
             reached[-1] = ReachedPoint(
                 path_id=pending.path_id,
                 address=pending.address,
+                symbol=pending.symbol,
                 values=dict(current_values),
             )
         pending = None
@@ -206,7 +230,11 @@ def _parse_output(text: str) -> tuple[list[ReachedPoint], list[CutPoint]]:
                 addr = int(m.group("address"), 16)
             except ValueError as exc:
                 raise ParseError(f"Cannot parse reach address: {line!r}") from exc
-            pending = ReachedPoint(path_id=int(m.group("path")), address=addr)
+            pending = ReachedPoint(
+                path_id=int(m.group("path")),
+                address=addr,
+                symbol=m.group("symbol"),
+            )
             reached.append(pending)
             continue
 

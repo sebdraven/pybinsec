@@ -1,0 +1,29 @@
+# Force LF line endings for all text files in this repo, regardless of
+# the contributor's OS or git's core.autocrlf setting. This keeps the
+# pre-commit mixed-line-ending hook idempotent on Windows and prevents
+# noisy diffs caused by CRLF/LF flip-flops.
+
+* text=auto eol=lf
+
+# Be explicit about the file types we care about. The "* text=auto"
+# above already covers them, but listing them makes intent obvious.
+*.py    text eol=lf
+*.pyi   text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.cfg   text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# Shell scripts MUST be LF, even on Windows: bash on the runner won't
+# parse them otherwise.
+*.sh    text eol=lf
+
+# Treat these as binary so git doesn't try to "fix" them.
+*.png   binary
+*.jpg   binary
+*.pdf   binary
+*.elf   binary
+*.so    binary
