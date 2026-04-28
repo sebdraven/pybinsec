@@ -31,7 +31,7 @@ from pybinsec.sse import (
     SSERunner,
 )
 
-__version__ = "0.3.0.dev0"
+__version__ = "0.3.1.dev0"
 
 __all__ = [
     "Binsec",

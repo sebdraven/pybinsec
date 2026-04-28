@@ -188,6 +188,14 @@ class State:
         self._regs = _RegisterView(self)
         self._mem = _MemoryView(self)
         self._solver = Solver(self)
+        # Symbolic variables declared via solver.BVS(...). Tracked so
+        # SimulationManager.explore can ask Binsec to print their
+        # concrete values on every reach event (otherwise
+        # FoundSolver.eval would always raise KeyError).
+        self._bvs: list[SymbolicValue] = []
+        # Extra expressions (raw SSE strings) the user wants printed on
+        # every reach event, on top of the auto-tracked BVS.
+        self._extra_prints: list[str] = []
 
     @property
     def regs(self) -> _RegisterView:
@@ -213,6 +221,26 @@ class State:
         """Add an ``assume`` directive over the symbolic state."""
         self._builder.assume(cond)
 
+    def print_on_reach(self, expr: SymbolicValue | str) -> None:
+        """Mark an additional expression to print on every reach event.
+
+        BVS variables are tracked automatically (see
+        :meth:`Solver.BVS`); use this method to also dump arbitrary
+        SSE expressions like ``"@[rsp, 8]"`` or ``"rax"``.
+        """
+        rendered = expr.to_sse() if isinstance(expr, SymbolicValue) else str(expr).strip()
+        if rendered and rendered not in self._extra_prints:
+            self._extra_prints.append(rendered)
+
+    @property
+    def tracked_prints(self) -> list[str]:
+        """Expressions that will be printed on every reach event.
+
+        The order is: BVS in declaration order, then
+        :meth:`print_on_reach` additions in insertion order.
+        """
+        return [bvs.to_sse() for bvs in self._bvs] + list(self._extra_prints)
+
     # -- internals used by the views -------------------------------------
 
     def _set_register(self, name: str, value: Any) -> None:
@@ -223,6 +251,7 @@ class State:
 
     def _declare_symbolic(self, name: str, size: int) -> None:
         self._builder.init(name, "nondet", size=size)
+        self._bvs.append(SymbolicValue(name=name, size=size))
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +367,7 @@ class SimulationManager:
         avoid: _TargetsArg = None,
         timeout: float | None = None,
         extra_args: list[str] | None = None,
+        auto_print: bool = True,
     ) -> SimulationManager:
         """Run Binsec on the state with one or more targets.
 
@@ -348,6 +378,14 @@ class SimulationManager:
             timeout: Wall-clock timeout passed to the underlying runner.
             extra_args: Additional Binsec CLI flags (e.g.
                 ``["-sse-timeout", "30"]``).
+            auto_print: When ``True`` (default), every BVS declared on
+                the state and every expression registered with
+                :meth:`State.print_on_reach` is automatically printed on
+                each reach event so :meth:`FoundSolver.eval` can return
+                concrete values. Set to ``False`` to disable, e.g. when
+                the printed expressions are too large or when the user
+                wants full control via the lower-level
+                :class:`~pybinsec.sse.builder.ScriptBuilder`.
 
         Returns:
             ``self`` for chaining.
@@ -367,7 +405,7 @@ class SimulationManager:
         finds = self._normalize(find)
         avoids = self._normalize(avoid)
 
-        script = self._compile_script(finds, avoids)
+        script = self._compile_script(finds, avoids, auto_print=auto_print)
         runner = SSERunner(self._project._binsec)
         result = runner.run(
             script,
@@ -390,6 +428,8 @@ class SimulationManager:
         self,
         finds: list[_TargetLike],
         avoids: list[_TargetLike],
+        *,
+        auto_print: bool = True,
     ) -> Any:  # Script, but importing here would be circular noise
         """Assemble: starting_from + state inits + reach(es) + cut(s)."""
         sb = ScriptBuilder()
@@ -399,12 +439,28 @@ class SimulationManager:
         # 2. replay every directive the state accumulated, in order
         for directive in self._state._builder.build().directives:
             sb._script.add(directive)
-        # 3. reach / cut directives
+        # 3. compute the auto-print clause once: each reach event will
+        #    carry the same set of printed expressions so that
+        #    FoundState.solver.eval works uniformly across paths.
+        then_clause = self._build_then_clause() if auto_print else None
+        # 4. reach / cut directives
         for f in finds:
-            sb.reach(f)
+            sb.reach(f, then=then_clause)
         for a in avoids:
             sb.cut_at(a)
         return sb.build()
+
+    def _build_then_clause(self) -> str | None:
+        """Build the ``then`` argument for reach directives.
+
+        Returns ``None`` if the state has nothing to print, in which
+        case reach directives stay bare. Multiple expressions are
+        joined with ``;`` so a single reach event prints them all.
+        """
+        prints = self._state.tracked_prints
+        if not prints:
+            return None
+        return "; ".join(f"print {p}" for p in prints)
 
     @staticmethod
     def _normalize(arg: _TargetsArg) -> list[_TargetLike]:

@@ -91,6 +91,58 @@ def compiled_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return binary
 
 
+# Second fixture: a binary where reaching ``target`` forces a single
+# 64-bit input (the first integer argument of ``magic``) to a known
+# concrete value. Lets us assert that auto-printed BVS values can be
+# read back via FoundSolver.eval against the real binsec.
+_NUMERIC_C_SOURCE = r"""
+__attribute__((noinline))
+int target(void) {
+    return 42;
+}
+
+__attribute__((noinline))
+int magic(long x) {
+    if (x == 0xCAFEBABE) {
+        return target();
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    return magic((long)argc);
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def numeric_check_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Binary with a single 64-bit integer guard on a target function."""
+    if not _gcc_available():
+        pytest.skip("gcc not available on this runner")
+    if not _binsec_available():
+        pytest.skip("real binsec not available")
+
+    work = tmp_path_factory.mktemp("integration_numeric")
+    src = work / "numeric.c"
+    src.write_text(_NUMERIC_C_SOURCE)
+    binary = work / "numeric"
+    subprocess.run(
+        [
+            "gcc",
+            "-O0",
+            "-no-pie",
+            "-fno-stack-protector",
+            "-o",
+            str(binary),
+            str(src),
+        ],
+        check=True,
+    )
+    return binary
+
+
 class TestBinsecBasics:
     """Smoke checks that prove the extracted Binsec works at all."""
 
@@ -231,3 +283,73 @@ class TestV3ProjectEndToEnd:
         simgr.explore(find="target", timeout=60)
 
         assert simgr.found, "explore from explicit main address should still reach target"
+
+
+class TestV31AutoPrintEndToEnd:
+    """End-to-end auto-print: a BVS reaches Binsec, gets printed, comes back.
+
+    The numeric_check_binary has ``magic(long x)`` guarded by
+    ``x == 0xCAFEBABE`` before calling ``target``. Starting symbolic
+    execution from ``magic`` with a BVS plugged into rdi, the only way
+    to reach ``target`` is for x to equal 0xCAFEBABE, so Binsec's
+    printed concrete value must be exactly that.
+
+    This is the test that justified the v0.3.1 feature: without
+    auto-print, ``found.solver.eval(arg)`` would always raise
+    KeyError, making the API unusable in practice.
+    """
+
+    def test_solver_eval_returns_concrete_input(self, numeric_check_binary: Path) -> None:
+        proj = Project(numeric_check_binary)
+        # Start at <magic> directly: rdi already holds the long arg per
+        # System V x86-64 ABI, so we don't need to model main's prologue.
+        state = proj.factory.entry_state(addr="magic")
+        arg = state.solver.BVS("arg", 64)
+        state.regs.rdi = arg
+
+        simgr = proj.factory.simulation_manager(state)
+        simgr.explore(find="target", timeout=60)
+
+        if not simgr.found and simgr.last_result is not None:
+            print(f"\n=== returncode: {simgr.last_result.returncode} ===")
+            print("=== Script ===")
+            print(simgr.last_result.script_text)
+            print("=== Stdout (first 2000) ===")
+            print(simgr.last_result.stdout[:2000])
+            print("=== Stderr (first 2000) ===")
+            print(simgr.last_result.stderr[:2000])
+
+        assert simgr.found, "target should be reachable when arg == 0xCAFEBABE"
+        found = simgr.found[0]
+
+        # The printed key must match the auto-print output produced by
+        # SimulationManager. Surface it for diagnostics on failure.
+        if not found.solver.has(arg):
+            print(f"\n=== values printed by Binsec: {found.values} ===")
+            if simgr.last_result is not None:
+                print("=== Stdout (first 4000) ===")
+                print(simgr.last_result.stdout[:4000])
+
+        assert found.solver.has(arg), "BVS should have been auto-printed by Binsec"
+        assert found.solver.eval(arg) == 0xCAFEBABE
+
+    def test_auto_print_disabled_drops_values(self, numeric_check_binary: Path) -> None:
+        """With ``auto_print=False``, Binsec prints nothing for the BVS.
+
+        Confirms that the explicit opt-out works end-to-end and that
+        :meth:`FoundSolver.eval` correctly raises when no value was
+        recorded.
+        """
+        proj = Project(numeric_check_binary)
+        state = proj.factory.entry_state(addr="magic")
+        arg = state.solver.BVS("arg", 64)
+        state.regs.rdi = arg
+
+        simgr = proj.factory.simulation_manager(state)
+        simgr.explore(find="target", timeout=60, auto_print=False)
+
+        assert simgr.found, "target should still be reachable"
+        found = simgr.found[0]
+        assert not found.solver.has(arg)
+        with pytest.raises(KeyError):
+            found.solver.eval(arg)

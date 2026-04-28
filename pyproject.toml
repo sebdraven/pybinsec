@@ -1,6 +1,6 @@
 [project]
 name = "pybinsec"
-version = "0.3.0.dev0"
+version = "0.3.1.dev0"
 description = "Python bindings and high-level API for Binsec (CEA)"
 readme = "README.md"
 requires-python = ">=3.12"
