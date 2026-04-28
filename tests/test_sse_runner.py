@@ -98,12 +98,7 @@ class TestSSERunner:
         target.write_bytes(b"\x7fELF")
 
         runner = SSERunner(Binsec(fake_binsec))
-        script = (
-            ScriptBuilder()
-            .starting_from(0x401234)
-            .reach(0x401300)
-            .build()
-        )
+        script = ScriptBuilder().starting_from(0x401234).reach(0x401300).build()
 
         # Capture the args passed to Binsec.run() so we can assert the
         # CLI we constructed is what we expect.
@@ -163,9 +158,7 @@ class TestSSERunner:
             self: Binsec, args: list[str], **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             captured["args"] = args
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         with patch.object(Binsec, "run", fake_run):
             runner.run(script, target, extra_args=["-sse-timeout", "30", "-fml-solver", "z3"])

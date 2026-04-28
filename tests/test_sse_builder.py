@@ -13,12 +13,7 @@ class TestBuilderBasics:
         assert b.cut_at(0x9ABC) is b
 
     def test_minimal_script(self) -> None:
-        text = (
-            ScriptBuilder()
-            .starting_from(0x401234)
-            .reach(0x401300)
-            .to_sse()
-        )
+        text = ScriptBuilder().starting_from(0x401234).reach(0x401300).to_sse()
         assert text == "starting from 0x401234\nreach 0x401300\n"
 
 
@@ -52,11 +47,7 @@ class TestReplaceShortcut:
             )
             .to_sse()
         )
-        expected = (
-            "replace <__isoc99_scanf> by\n"
-            "    caller<64> := @[rsp, 8]\n"
-            "end\n"
-        )
+        expected = "replace <__isoc99_scanf> by\n    caller<64> := @[rsp, 8]\nend\n"
         assert text == expected
 
     def test_multiple_symbols(self) -> None:
@@ -89,10 +80,7 @@ class TestRawEscapeHatch:
             .to_sse()
         )
         expected = (
-            "starting from <main>\n"
-            "for i<64> in 0 to 10 do\n"
-            "    @[rsi + i, 1] := nondet\n"
-            "end\n"
+            "starting from <main>\nfor i<64> in 0 to 10 do\n    @[rsi + i, 1] := nondet\nend\n"
         )
         assert text == expected
 

@@ -108,22 +108,17 @@ class TestReach:
 
     def test_such_that(self) -> None:
         cond = BinOp(Reg("eax"), "=", 0x2A)
-        assert (
-            Reach(0x401300, such_that=cond).to_sse()
-            == "reach 0x401300 such that (eax = 0x2a)"
-        )
+        assert Reach(0x401300, such_that=cond).to_sse() == "reach 0x401300 such that (eax = 0x2a)"
 
     def test_then_action(self) -> None:
-        assert (
-            Reach(0x401300, then="print eax").to_sse()
-            == "reach 0x401300 then print eax"
-        )
+        assert Reach(0x401300, then="print eax").to_sse() == "reach 0x401300 then print eax"
 
     def test_full_form(self) -> None:
         cond = BinOp(Reg("al"), "<>", 0)
-        assert Reach(
-            "magic:last", times=1, such_that=cond, then="print arg"
-        ).to_sse() == "reach <magic:last> 1 times such that (al <> 0x0) then print arg"
+        assert (
+            Reach("magic:last", times=1, such_that=cond, then="print arg").to_sse()
+            == "reach <magic:last> 1 times such that (al <> 0x0) then print arg"
+        )
 
 
 class TestCut:
@@ -161,11 +156,7 @@ class TestReplace:
                 Initialize(Var("caller", 64), Mem(Reg("rsp"), 8)),
             ],
         ).to_sse()
-        expected = (
-            "replace <__isoc99_scanf> by\n"
-            "    caller<64> := @[rsp, 8]\n"
-            "end"
-        )
+        expected = "replace <__isoc99_scanf> by\n    caller<64> := @[rsp, 8]\nend"
         assert block == expected
 
     def test_multiple_symbols(self) -> None:
@@ -204,10 +195,7 @@ class TestScriptComposition:
             .add(Cut(0x401400))
         )
         expected = (
-            "starting from 0x401234\n"
-            "rsp := 0x7fffffffd8e0\n"
-            "reach 0x401300\n"
-            "cut at 0x401400\n"
+            "starting from 0x401234\nrsp := 0x7fffffffd8e0\nreach 0x401300\ncut at 0x401400\n"
         )
         assert script.to_sse() == expected
 

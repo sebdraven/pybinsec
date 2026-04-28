@@ -37,9 +37,7 @@ _REACHED_RE = re.compile(
 _VALUE_RE = re.compile(
     r"\[sse:result\]\s+Value\s+(?P<expr>.+?)\s*:\s*(?P<value>0x[0-9a-fA-F]+)\s*$"
 )
-_CUT_RE = re.compile(
-    r"\[sse:warning\]\s+Cut\s+@\s+\((?P<address>[0-9a-fA-Fx]+),\s*\d+\)"
-)
+_CUT_RE = re.compile(r"\[sse:warning\]\s+Cut\s+@\s+\((?P<address>[0-9a-fA-Fx]+),\s*\d+\)")
 
 
 @dataclass(frozen=True, slots=True)

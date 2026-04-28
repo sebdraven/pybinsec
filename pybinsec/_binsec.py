@@ -51,9 +51,7 @@ def find_binsec(explicit: str | os.PathLike[str] | None = None) -> Path:
     if env_path:
         path = Path(env_path).expanduser()
         if not path.is_file():
-            raise BinsecNotFoundError(
-                f"{ENV_BINARY} points to a non-existent file: {env_path}"
-            )
+            raise BinsecNotFoundError(f"{ENV_BINARY} points to a non-existent file: {env_path}")
         return path.resolve()
 
     found = shutil.which("binsec")

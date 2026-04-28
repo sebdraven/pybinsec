@@ -109,9 +109,7 @@ class ScriptBuilder:
         then: str | None = None,
     ) -> ScriptBuilder:
         """Add a ``reach`` directive."""
-        self._script.add(
-            Reach(address=address, times=times, such_that=such_that, then=then)
-        )
+        self._script.add(Reach(address=address, times=times, such_that=such_that, then=then))
         return self
 
     def cut_at(
