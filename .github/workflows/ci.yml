@@ -10,7 +10,15 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Trigger on main and any feature branch (feat/**, fix/**, etc.) so
+    # the CI runs while we iterate on long-lived branches without
+    # needing to open a PR every time. Tags are excluded to avoid
+    # accidental double-runs on release tagging.
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
   pull_request:
     branches: [main]
 
