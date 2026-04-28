@@ -122,3 +122,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Examples extracted from the official binsec/binsec Docker image.
+# Studied locally to design pybinsec, not redistributed.
+examples-from-image/
+examples-from-images/
+*.tar.gz

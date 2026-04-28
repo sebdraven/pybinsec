@@ -74,18 +74,28 @@ jobs:
         # the binary and load it via LD_LIBRARY_PATH. The path inside the
         # image was confirmed by the inspect-official-binsec workflow:
         # /home/binsec/.opam/4.14.2/lib/stublibs/libz3.so
+        #
+        # We also pull out the canonical ``magic`` quickstart binary so
+        # the integration tests can reproduce the official Binsec
+        # tutorial against the same artefact, not a runner-recompiled
+        # one. The exact path inside the image was confirmed by the
+        # inspect-binsec-examples workflow.
         run: |
           mkdir -p "$HOME/binsec-bin"
+          mkdir -p "$HOME/binsec-examples"
           CID=$(docker create --entrypoint /bin/sh "$BINSEC_IMAGE")
           docker cp "$CID":/usr/bin/binsec "$HOME/binsec-bin/binsec"
           docker cp "$CID":/home/binsec/.opam/4.14.2/lib/stublibs/libz3.so "$HOME/binsec-bin/libz3.so"
+          docker cp "$CID":/home/binsec/examples/sse/quickstart/magic "$HOME/binsec-examples/magic"
           docker rm "$CID"
           chmod +x "$HOME/binsec-bin/binsec"
+          chmod +x "$HOME/binsec-examples/magic"
           # Sanity check with the freshly extracted libz3 in the loader path.
           LD_LIBRARY_PATH="$HOME/binsec-bin" "$HOME/binsec-bin/binsec" -version
-          echo "$HOME/binsec-bin"                       >> "$GITHUB_PATH"
-          echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$HOME/binsec-bin"        >> "$GITHUB_ENV"
+          echo "$HOME/binsec-bin"                                  >> "$GITHUB_PATH"
+          echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec"            >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/binsec-bin"                   >> "$GITHUB_ENV"
+          echo "PYBINSEC_OFFICIAL_MAGIC=$HOME/binsec-examples/magic" >> "$GITHUB_ENV"
 
       - name: Install runtime libs the extracted binsec needs
         # Mirrors the libs reported by ldd inside the official image:

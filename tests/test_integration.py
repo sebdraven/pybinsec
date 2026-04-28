@@ -353,3 +353,97 @@ class TestV31AutoPrintEndToEnd:
         assert not found.solver.has(arg)
         with pytest.raises(KeyError):
             found.solver.eval(arg)
+
+
+class TestOfficialMagicQuickstart:
+    """Reproduce Binsec's canonical ``magic`` SSE quickstart with pybinsec.
+
+    The ``magic`` binary and the reference ``crackme.ini`` script live
+    in the official binsec/binsec Docker image at
+    ``/home/binsec/examples/sse/quickstart``. The CI's ``test-binsec``
+    job extracts the binary alongside the binsec executable and exposes
+    its path through the ``PYBINSEC_OFFICIAL_MAGIC`` env var.
+
+    The reference script is::
+
+        starting from <magic>
+        esp := 0xffffccf1
+        return_address<32> := 0x0804812b
+        @[esp, 4] := return_address
+        arg<32> := @[esp + 4, 4]
+        reach return_address such that al <> 0 then print arg
+        cut at return_address
+
+    Expected Binsec output (from the official README):
+
+        [sse:result] Value arg<32> : 0xc0dedead
+
+    If pybinsec reaches the same conclusion via the same script
+    structure, we can claim parity with the canonical reference
+    workflow on this benchmark.
+    """
+
+    @pytest.fixture(scope="class")
+    def magic_binary(self) -> Path:
+        """Path to the official magic binary, exposed by the CI."""
+        path = os.environ.get("PYBINSEC_OFFICIAL_MAGIC")
+        if not path:
+            pytest.skip(
+                "PYBINSEC_OFFICIAL_MAGIC env var not set; the canonical "
+                "magic binary is only available in the test-binsec CI job "
+                "that extracts it from the binsec/binsec Docker image."
+            )
+        binary = Path(path)
+        if not binary.is_file():
+            pytest.skip(f"PYBINSEC_OFFICIAL_MAGIC points to a missing file: {path}")
+        return binary
+
+    def test_recover_secret_with_script_builder(self, magic_binary: Path) -> None:
+        """Low-level :class:`ScriptBuilder` reproduction of crackme.ini.
+
+        Mirrors examples/01_sse_magic.py one for one and checks that
+        Binsec recovers the documented secret 0xc0dedead in the
+        captured ``arg<32>`` variable.
+        """
+        return_addr = 0x0804812B
+        bs = Binsec()
+        script = (
+            ScriptBuilder()
+            .starting_from("magic")
+            .init("esp", 0xFFFFCCF1)
+            .init("return_address", return_addr, size=32)
+            .init_memory("esp", "return_address", size=4)
+            .init("arg", "@[esp + 4, 4]", size=32)
+            .reach(return_addr, such_that="al <> 0", then="print arg")
+            .cut_at(return_addr)
+            .build()
+        )
+        runner = SSERunner(bs)
+        result = runner.run(script, magic_binary, timeout=60)
+
+        if not result.reached:
+            print(f"\n=== returncode: {result.returncode} ===")
+            print("=== Script ===")
+            print(result.script_text)
+            print("=== Stdout (first 3000) ===")
+            print(result.stdout[:3000])
+            print("=== Stderr (first 2000) ===")
+            print(result.stderr[:2000])
+
+        assert result.reached, "binsec should reach the post-magic point with al != 0"
+
+        # Look for the documented secret across all reach events. The
+        # iteration is defensive: a single reach is the expected case
+        # but Binsec can in principle emit more.
+        recovered = [rp.values.get("arg<32>") for rp in result.reached]
+        assert 0xC0DEDEAD in recovered, (
+            f"expected arg<32> == 0xc0dedead in the recovered values, " f"got: {recovered}"
+        )
+
+    # NOTE: a Project / SimulationManager reproduction of this same
+    # crackme requires ``simgr.explore(such_that=...)`` (or a
+    # ``find_when=`` keyword) to express the ``reach return_address
+    # such that al <> 0`` filter from the reference script. The current
+    # API only exposes ``state.add_constraint(...)`` which is an
+    # ``assume`` directive applied early, not a per-reach filter.
+    # Tracked as a v0.4 API extension candidate.
