@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from pybinsec import Binsec, ScriptBuilder, SSERunner
+from pybinsec import Binsec, Project, ScriptBuilder, SSERunner
 
 # Apply the marker to every test in this module: the CI ignores them on
 # the lint and test-no-bin jobs and runs them only where binsec is set up.
@@ -149,3 +149,85 @@ class TestSSEEndToEnd:
         assert result.script_text == expected_text
         assert "starting from <main>" in result.script_text
         assert "reach <target>" in result.script_text
+
+
+class TestV3ProjectEndToEnd:
+    """End-to-end exercise of the angr-style Project / SimulationManager API.
+
+    Mirrors :class:`TestSSEEndToEnd` but goes through the higher-level
+    surface (Project / factory / state / simulation_manager). The intent
+    is to catch any regression in the v0.3 layer the same way the v0.2
+    integration test caught the parser drift between Binsec versions.
+    """
+
+    def test_explore_finds_target_by_symbol(self, compiled_binary: Path) -> None:
+        proj = Project(compiled_binary)
+        state = proj.factory.entry_state(addr="main")
+        simgr = proj.factory.simulation_manager(state)
+
+        simgr.explore(find="target", timeout=60)
+
+        # Diagnostic dump on failure: the captured SSEResult is the same
+        # data structure the v0.2 integration test inspects.
+        if not simgr.found and simgr.last_result is not None:
+            print(f"\n=== returncode: {simgr.last_result.returncode} ===")
+            print("=== Script ===")
+            print(simgr.last_result.script_text)
+            print("=== Stdout (first 2000) ===")
+            print(simgr.last_result.stdout[:2000])
+            print("=== Stderr (first 2000) ===")
+            print(simgr.last_result.stderr[:2000])
+
+        assert simgr.found, "explore() should have populated simgr.found"
+        found = simgr.found[0]
+        # The new-format Binsec output always includes the symbol next
+        # to the address; v0.3 surfaces it on FoundState.symbol.
+        assert found.symbol == "<target>"
+        assert found.addr > 0
+        assert found.path_id >= 0
+
+    def test_explore_finds_target_by_address(self, compiled_binary: Path) -> None:
+        """Resolve <target> via a first run, then re-explore by address.
+
+        This double-pass also confirms that two Project instances over
+        the same binary do not interfere with each other.
+        """
+        # First pass: get the address of <target> from the symbol match.
+        proj = Project(compiled_binary)
+        state = proj.factory.entry_state(addr="main")
+        simgr = proj.factory.simulation_manager(state)
+        simgr.explore(find="target", timeout=60)
+        assert simgr.found, "first pass must resolve <target> by symbol"
+        target_addr = simgr.found[0].addr
+
+        # Second pass: same target, but expressed as a raw integer.
+        proj2 = Project(compiled_binary)
+        state2 = proj2.factory.entry_state(addr="main")
+        simgr2 = proj2.factory.simulation_manager(state2)
+        simgr2.explore(find=target_addr, timeout=60)
+
+        assert simgr2.found, "second pass should match by integer address"
+        assert simgr2.found[0].addr == target_addr
+
+    def test_blank_state_with_explicit_entry(self, compiled_binary: Path) -> None:
+        """``blank_state`` with an explicit address starts where we say.
+
+        We start from the resolved address of ``main`` (computed via a
+        first symbol-based pass) and verify the run still hits target.
+        """
+        proj = Project(compiled_binary)
+
+        # Resolve the address of main via a smoke run from the symbol.
+        state0 = proj.factory.entry_state(addr="main")
+        simgr0 = proj.factory.simulation_manager(state0)
+        simgr0.explore(find="main", timeout=60)
+        if not simgr0.found:
+            pytest.skip("could not resolve <main> address on this binary")
+        main_addr = simgr0.found[0].addr
+
+        # Now use blank_state with the resolved integer entry.
+        state = proj.factory.blank_state(addr=main_addr)
+        simgr = proj.factory.simulation_manager(state)
+        simgr.explore(find="target", timeout=60)
+
+        assert simgr.found, "explore from explicit main address should still reach target"
