@@ -1,0 +1,107 @@
+name: ci
+
+# Triggered on every push and PR targeting main.
+#
+# Three jobs:
+#   - lint         : ruff + mypy on the runner natively (fast)
+#   - test-no-bin  : runs the unit tests that don't need a real Binsec
+#   - test-binsec  : runs the full suite inside the official binsec/binsec
+#                    image, pinned by digest for reproducibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The digest of binsec/binsec:latest captured on 2026-04-28. Bumping this is
+# a deliberate, audited change: review the new image with the
+# "inspect-official-binsec" workflow before updating.
+env:
+  BINSEC_IMAGE: binsec/binsec@sha256:c50725e855a4c31aa4be04ccd1663834e1cb063ef4c66264d14431d4c65b5dcd
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy pybinsec
+
+  test-no-bin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests that don't need Binsec
+        run: uv run pytest -v -m "not requires_binsec"
+
+  test-binsec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull pinned Binsec image
+        run: docker pull "$BINSEC_IMAGE"
+
+      - name: Extract binsec binary from the image
+        # Copy the binary out of the container into a path on the runner
+        # so tests can call it natively without Docker overhead.
+        run: |
+          mkdir -p "$HOME/binsec-bin"
+          CID=$(docker create --entrypoint /bin/sh "$BINSEC_IMAGE")
+          docker cp "$CID":/usr/bin/binsec "$HOME/binsec-bin/binsec"
+          docker rm "$CID"
+          chmod +x "$HOME/binsec-bin/binsec"
+          # Sanity check
+          "$HOME/binsec-bin/binsec" -version || true
+          echo "$HOME/binsec-bin" >> "$GITHUB_PATH"
+          echo "PYBINSEC_BINARY=$HOME/binsec-bin/binsec" >> "$GITHUB_ENV"
+
+      - name: Install runtime libs the extracted binsec needs
+        # Mirrors the libs reported by ldd inside the official image:
+        # libgmp10, libstdc++6, libncursesw6, libtinfo6 (all on Ubuntu 24.04
+        # by default). We install explicitly to fail fast if anything moves.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgmp10 libstdc++6 libncursesw6 libtinfo6
+
+      - name: Verify Binsec works on the runner
+        run: |
+          binsec -version
+          binsec -help | head -5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run full test suite (including requires_binsec tests)
+        run: uv run pytest -v

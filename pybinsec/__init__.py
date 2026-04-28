@@ -3,7 +3,7 @@
 This is the public entry point. Three layers are exposed:
 
 - Layer 1: low-level subprocess wrapper (:class:`Binsec`)
-- Layer 2: SSE script builder (:mod:`pybinsec.sse`)
+- Layer 2: SSE script builder and runner (:mod:`pybinsec.sse`)
 - Layer 3: idiomatic symbolic-execution API (planned: ``Project``)
 """
 
@@ -12,10 +12,18 @@ from pybinsec.exceptions import (
     BinsecError,
     BinsecNotFoundError,
     BinsecRuntimeError,
+    ParseError,
     PybinsecError,
+    ScriptError,
+)
+from pybinsec.sse import (
+    Script,
+    ScriptBuilder,
+    SSEResult,
+    SSERunner,
 )
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.2.0.dev0"
 
 __all__ = [
     "Binsec",
@@ -23,7 +31,13 @@ __all__ = [
     "BinsecInfo",
     "BinsecNotFoundError",
     "BinsecRuntimeError",
+    "ParseError",
     "PybinsecError",
+    "SSEResult",
+    "SSERunner",
+    "Script",
+    "ScriptBuilder",
+    "ScriptError",
     "__version__",
     "find_binsec",
 ]

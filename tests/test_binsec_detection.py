@@ -25,7 +25,7 @@ def _make_fake_binsec(tmp_path: Path, version: str = "0.10.1") -> Path:
         helper_py = tmp_path / "_fake_binsec.py"
         helper_py.write_text(
             "import sys\n"
-            "if len(sys.argv) > 1 and sys.argv[1] == '--version':\n"
+            "if len(sys.argv) > 1 and sys.argv[1] == '-version':\n"
             f"    print('binsec {version}')\n"
             "    sys.exit(0)\n"
             "sys.exit(0)\n"
@@ -37,7 +37,7 @@ def _make_fake_binsec(tmp_path: Path, version: str = "0.10.1") -> Path:
     fake = tmp_path / "binsec"
     fake.write_text(
         f"""#!/usr/bin/env bash
-if [[ "$1" == "--version" ]]; then
+if [[ "$1" == "-version" ]]; then
   echo "binsec {version}"
   exit 0
 fi

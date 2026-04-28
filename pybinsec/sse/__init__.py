@@ -1,12 +1,61 @@
 """SSE (Static Symbolic Execution) script construction and execution.
 
-This subpackage is the heart of the Layer 2 API: building Binsec SSE
-scripts programmatically and running them via the :class:`~pybinsec.Binsec`
-wrapper.
+Three groups of names are exposed:
 
-Modules will be filled in v0.2:
-
-- :mod:`pybinsec.sse.script`: directive AST
-- :mod:`pybinsec.sse.builder`: fluent builder API
-- :mod:`pybinsec.sse.runner`: execution + output parsing
+- AST nodes for hand-rolled scripts (:class:`Script`, expressions like
+  :class:`Const`, :class:`Var`, :class:`Mem`, and directives like
+  :class:`Reach`, :class:`Cut`...).
+- The fluent :class:`ScriptBuilder` for the common case.
+- The :class:`SSERunner` that drives Binsec on a built script.
 """
+
+from pybinsec.sse.builder import ScriptBuilder
+from pybinsec.sse.runner import CutPoint, ReachedPoint, SSEResult, SSERunner
+from pybinsec.sse.script import (
+    NONDET,
+    Assert,
+    Assume,
+    BinOp,
+    Const,
+    Cut,
+    Directive,
+    Expr,
+    Initialize,
+    Mem,
+    Nondet,
+    Print,
+    Reach,
+    Reg,
+    Replace,
+    Script,
+    StartingFrom,
+    Sym,
+    Var,
+)
+
+__all__ = [
+    "NONDET",
+    "Assert",
+    "Assume",
+    "BinOp",
+    "Const",
+    "Cut",
+    "CutPoint",
+    "Directive",
+    "Expr",
+    "Initialize",
+    "Mem",
+    "Nondet",
+    "Print",
+    "Reach",
+    "ReachedPoint",
+    "Reg",
+    "Replace",
+    "SSEResult",
+    "SSERunner",
+    "Script",
+    "ScriptBuilder",
+    "StartingFrom",
+    "Sym",
+    "Var",
+]

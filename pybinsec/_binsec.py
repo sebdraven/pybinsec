@@ -97,9 +97,12 @@ class Binsec:
         return self._info
 
     def _probe_version(self) -> BinsecInfo:
+        # Binsec uses a single dash for its top-level flags: ``-version``,
+        # not ``--version``. Calling ``--version`` would print the entire
+        # option list, which is much heavier and harder to parse.
         try:
             proc = subprocess.run(
-                [str(self._path), "--version"],
+                [str(self._path), "-version"],
                 capture_output=True,
                 text=True,
                 timeout=10,
