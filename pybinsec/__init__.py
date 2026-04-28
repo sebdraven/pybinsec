@@ -16,6 +16,14 @@ from pybinsec.exceptions import (
     PybinsecError,
     ScriptError,
 )
+from pybinsec.project import (
+    FoundState,
+    Project,
+    ProjectFactory,
+    SimulationManager,
+    State,
+    SymbolicValue,
+)
 from pybinsec.sse import (
     Script,
     ScriptBuilder,
@@ -23,7 +31,7 @@ from pybinsec.sse import (
     SSERunner,
 )
 
-__version__ = "0.2.0.dev0"
+__version__ = "0.3.0.dev0"
 
 __all__ = [
     "Binsec",
@@ -31,13 +39,19 @@ __all__ = [
     "BinsecInfo",
     "BinsecNotFoundError",
     "BinsecRuntimeError",
+    "FoundState",
     "ParseError",
+    "Project",
+    "ProjectFactory",
     "PybinsecError",
     "SSEResult",
     "SSERunner",
     "Script",
     "ScriptBuilder",
     "ScriptError",
+    "SimulationManager",
+    "State",
+    "SymbolicValue",
     "__version__",
     "find_binsec",
 ]
