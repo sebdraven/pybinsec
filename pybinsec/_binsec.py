@@ -18,12 +18,27 @@ from pybinsec.exceptions import BinsecNotFoundError, BinsecRuntimeError
 
 ENV_BINARY = "PYBINSEC_BINARY"
 
-_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+# Binsec's ``-version`` flag prints either a semantic release version
+# (e.g. ``0.10.1``) for tagged builds, or a short git commit hash
+# (e.g. ``2ecbb8a``) for builds made from a non-release commit. We
+# accept both forms so that ``info.version`` still carries something
+# meaningful in either case.
+_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?|\b[0-9a-f]{7,40}\b)")
 
 
 @dataclass(frozen=True, slots=True)
 class BinsecInfo:
-    """Information about a discovered Binsec installation."""
+    """Information about a discovered Binsec installation.
+
+    Attributes:
+        path: Absolute path to the binary.
+        version: Either a semantic version like ``"0.10.1"`` for tagged
+            release builds, or a short git commit hash like ``"2ecbb8a"``
+            for builds made from an untagged commit (e.g. master). May
+            be ``None`` if neither could be parsed from ``-version``.
+        raw_version_output: The exact text Binsec printed for ``-version``,
+            stored verbatim so callers can still inspect it.
+    """
 
     path: Path
     version: str | None

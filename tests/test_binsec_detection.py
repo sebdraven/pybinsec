@@ -78,6 +78,14 @@ class TestBinsecWrapper:
         assert bs.info.version == "0.9.0"
         assert bs.path == fake.resolve()
 
+    def test_version_probe_with_git_hash(self, tmp_path: Path) -> None:
+        # Builds from an untagged commit print a short git hash instead
+        # of a semantic version. The wrapper should still capture it.
+        fake = _make_fake_binsec(tmp_path, version="2ecbb8a")
+        bs = Binsec(fake)
+        assert bs.info.version == "2ecbb8a"
+        assert "2ecbb8a" in bs.info.raw_version_output
+
     def test_repr_contains_path(self, tmp_path: Path) -> None:
         fake = _make_fake_binsec(tmp_path)
         bs = Binsec(fake)
