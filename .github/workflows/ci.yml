@@ -34,11 +34,11 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
-      - name: ruff check
-        run: uv run ruff check .
-
-      - name: ruff format
-        run: uv run ruff format --check .
+      # Run the exact same hooks the developer runs locally on each
+      # commit. If any of them rewrites a file, the job fails, telling
+      # the dev to run pre-commit locally and re-push.
+      - name: pre-commit (ruff lint + format + hygiene)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
       - name: mypy
         run: uv run mypy pybinsec

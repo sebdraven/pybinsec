@@ -154,7 +154,7 @@ class ScriptBuilder:
             body: Sequence of statements (strings rendered verbatim,
                 or :class:`Initialize` instances).
         """
-        if isinstance(symbols, (str, Sym)):
+        if isinstance(symbols, str | Sym):
             symbols_seq: Sequence[str | Sym] = [symbols]
         else:
             symbols_seq = list(symbols)

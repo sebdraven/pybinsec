@@ -22,6 +22,16 @@ uv sync
 uv sync --extra smt --extra dev
 ```
 
+After cloning, install the pre-commit hooks once so that ruff lint
+and format run automatically on every `git commit`:
+
+```bash
+uv run pre-commit install
+```
+
+The CI runs the same hooks against the whole tree, so if anything
+gets through, push will be rejected.
+
 Binsec must be installed separately. `pybinsec` looks for it in this order:
 
 1. Explicit argument passed to `Binsec(path=...)`.
